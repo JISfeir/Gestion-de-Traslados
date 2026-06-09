@@ -1,0 +1,1005 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sistema de Gestión de Traslados de Pasajeros</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/inter@5.0.18/index.css">
+    <script src="https://cdn.jsdelivr.net/npm/@fullcalendar/core@6.1.10/index.global.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@fullcalendar/daygrid@6.1.10/index.global.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@fullcalendar/timegrid@6.1.10/index.global.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@fullcalendar/interaction@6.1.10/index.global.min.js"></script>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #f3f4f6; }
+        .fc-event { cursor: pointer; border-radius: 4px; padding: 2px 4px; font-size: 0.85rem; }
+        .fc-toolbar-title { font-size: 1.25rem !important; font-weight: 600 !important; }
+        .fc-button-primary { background-color: #2563eb !important; border-color: #2563eb !important; }
+        .fc-button-primary:hover { background-color: #1d4ed8 !important; border-color: #1d4ed8 !important; }
+        .fc-button-primary:not(:disabled).fc-button-active { background-color: #1e40af !important; border-color: #1e40af !important; }
+        .fade-in { animation: fadeIn 0.3s ease-in-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .loading-overlay { position: fixed; inset: 0; background: rgba(255,255,255,0.8); display: flex; align-items: center; justify-content: center; z-index: 9999; }
+        .spinner { width: 40px; height: 40px; border: 4px solid #e5e7eb; border-top-color: #2563eb; border-radius: 50%; animation: spin 1s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <!-- 
+    ========================================================================
+    GOOGLE APPS SCRIPT BACKEND (Code.gs)
+    Instrucciones:
+    1. Ve a tu Google Sheet -> Extensiones -> Apps Script
+    2. Pega este código en Code.gs
+    3. Reemplaza 'TU_ID_DE_GOOGLE_SHEET_AQUI' con el ID de tu hoja (está en la URL)
+    4. Ejecuta la función 'inicializarHojas' una vez desde el editor (▶)
+    5. Implementar -> Nueva implementación -> Tipo: Aplicación web -> Quién tiene acceso: Cualquiera
+    6. Copia la URL de la aplicación web y pégala en la variable API_URL del frontend (abajo)
+    ========================================================================
+    
+    const SPREADSHEET_ID = 'TU_ID_DE_GOOGLE_SHEET_AQUI';
+
+    function doGet(e) { return handleRequest(e, 'GET'); }
+    function doPost(e) { return handleRequest(e, 'POST'); }
+
+    function handleRequest(e, method) {
+      const action = e.parameter.action || (method === 'POST' ? JSON.parse(e.postData.contents).action : '');
+      const data = method === 'POST' ? JSON.parse(e.postData.contents) : {};
+      let result = {};
+
+      try {
+        const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+        
+        if (action === 'login') {
+          const sheet = ss.getSheetByName('Usuarios');
+          const rows = sheet.getDataRange().getValues();
+          const userRow = rows.slice(1).find(r => r[1] === data.email && r[4] === data.password);
+          result = userRow ? { success: true, user: { id: userRow[0], email: userRow[1], nombre: userRow[2], rol: userRow[3] } } : { success: false, error: 'Credenciales incorrectas' };
+        }
+        else if (action === 'getPacientes') {
+          const sheet = ss.getSheetByName('Pacientes');
+          const rows = sheet.getDataRange().getValues();
+          const headers = rows[0];
+          result = rows.slice(1).map(r => { let obj = {}; headers.forEach((h, i) => obj[h] = r[i]); return obj; }).filter(r => r.id);
+        }
+        else if (action === 'crearPaciente') {
+          const sheet = ss.getSheetByName('Pacientes');
+          const id = Utilities.getUuid();
+          sheet.appendRow([id, data.nombre, data.apellido, data.telefono, data.direccion, data.observaciones, new Date().toISOString()]);
+          result = { success: true, id };
+        }
+        else if (action === 'editarPaciente') {
+          const sheet = ss.getSheetByName('Pacientes');
+          const rows = sheet.getDataRange().getValues();
+          for (let i = 1; i < rows.length; i++) {
+            if (rows[i][0] === data.id) {
+              sheet.getRange(i + 1, 2, 1, 5).setValues([[data.nombre, data.apellido, data.telefono, data.direccion, data.observaciones]]);
+              result = { success: true }; break;
+            }
+          }
+        }
+        else if (action === 'getViajes') {
+          const sheet = ss.getSheetByName('Viajes');
+          const rows = sheet.getDataRange().getValues();
+          const headers = rows[0];
+          const viajes = rows.slice(1).map(r => { let obj = {}; headers.forEach((h, i) => obj[h] = r[i]); return obj; }).filter(r => r.id);
+          const pSheet = ss.getSheetByName('Pacientes');
+          const pRows = pSheet.getDataRange().getValues();
+          const pHeaders = pRows[0];
+          const pacientes = pRows.slice(1).map(r => { let obj = {}; pHeaders.forEach((h, i) => obj[h] = r[i]); return obj; });
+          result = viajes.map(v => {
+            const p = pacientes.find(pac => pac.id === v.paciente_id);
+            return { ...v, paciente_nombre: p ? `${p.nombre} ${p.apellido}` : 'Desconocido' };
+          });
+        }
+        else if (action === 'crearViaje') {
+          const sheet = ss.getSheetByName('Viajes');
+          const id = Utilities.getUuid();
+          sheet.appendRow([id, data.paciente_id, data.fecha_hora, data.origen, data.destino, data.estado || 'Pendiente', data.importe || 0, data.observaciones, new Date().toISOString()]);
+          result = { success: true, id };
+        }
+        else if (action === 'editarViaje') {
+          const sheet = ss.getSheetByName('Viajes');
+          const rows = sheet.getDataRange().getValues();
+          for (let i = 1; i < rows.length; i++) {
+            if (rows[i][0] === data.id) {
+              sheet.getRange(i + 1, 2, 1, 7).setValues([[data.paciente_id, data.fecha_hora, data.origen, data.destino, data.estado, data.importe, data.observaciones]]);
+              result = { success: true }; break;
+            }
+          }
+        }
+        else if (action === 'eliminarViaje') {
+          const sheet = ss.getSheetByName('Viajes');
+          const rows = sheet.getDataRange().getValues();
+          for (let i = 1; i < rows.length; i++) {
+            if (rows[i][0] === data.id) {
+              sheet.deleteRow(i + 1);
+              result = { success: true }; break;
+            }
+          }
+        }
+        else if (action === 'auditar') {
+          let sheet = ss.getSheetByName('Auditoria');
+          if (!sheet) { sheet = ss.insertSheet('Auditoria'); sheet.appendRow(['id', 'usuario_id', 'accion', 'fecha']); }
+          sheet.appendRow([Utilities.getUuid(), data.usuario_id || '', data.accion, new Date().toISOString()]);
+          result = { success: true };
+        }
+      } catch (err) {
+        result = { error: err.toString() };
+      }
+      
+      return ContentService.createTextOutput(JSON.stringify(result)).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    function inicializarHojas() {
+      const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+      const sheets = ['Usuarios', 'Pacientes', 'Viajes', 'Auditoria'];
+      sheets.forEach(name => {
+        let s = ss.getSheetByName(name) || ss.insertSheet(name);
+        s.clear();
+        if (name === 'Usuarios') s.appendRow(['id', 'email', 'nombre', 'rol', 'password']);
+        if (name === 'Pacientes') s.appendRow(['id', 'nombre', 'apellido', 'telefono', 'direccion', 'observaciones', 'fecha_creacion']);
+        if (name === 'Viajes') s.appendRow(['id', 'paciente_id', 'fecha_hora', 'origen', 'destino', 'estado', 'importe', 'observaciones', 'fecha_creacion']);
+        if (name === 'Auditoria') s.appendRow(['id', 'usuario_id', 'accion', 'fecha']);
+      });
+      const uSheet = ss.getSheetByName('Usuarios');
+      uSheet.appendRow(['1', 'melchukker2000@gmail.com', 'Administrador', 'admin', 'Viajes26']);
+    }
+    ========================================================================
+    -->
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        // ⚠️ REEMPLAZA ESTA URL CON LA DE TU APLICACIÓN WEB DE GOOGLE APPS SCRIPT
+        const API_URL = "https://script.google.com/macros/s/AKfycbwkgZsRmXRq4XobghgjFxCuuT7jxOC3qWQ8KoTEcWarDUWQa3lY_HoN47enNqqGfTRmFQ/exec";
+
+        const apiCall = async (action, payload = {}) => {
+            try {
+                const response = await fetch(`${API_URL}?action=${action}`, {
+                    method: "POST",
+                    body: JSON.stringify({ action, ...payload })
+                });
+                return await response.json();
+            } catch (error) {
+                console.error("API Error:", error);
+                return { error: "Error de conexión con el servidor" };
+            }
+        };
+
+        const Icons = {
+            User: () => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>,
+            Lock: () => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>,
+            Users: () => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>,
+            Calendar: () => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>,
+            Car: () => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 16H9m10 0h3v-3.15a1 1 0 0 0-.84-.99L16 11l-2.7-3.6a2 2 0 0 0-1.6-.8H8.3a2 2 0 0 0-1.6.8L4 11l-5.16.86A1 1 0 0 0-2 12.85V16h3m14 0v2a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-2m14 0H5"/></svg>,
+            Mail: () => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>,
+            Phone: () => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg>,
+            MapPin: () => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>,
+            Search: () => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>,
+            Plus: () => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>,
+            Edit: () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>,
+            Trash: () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>,
+            X: () => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>,
+            FileText: () => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>,
+            LogOut: () => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>,
+            Refresh: () => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 21h5v-5"/></svg>
+        };
+
+        const LoadingSpinner = () => (
+            <div className="loading-overlay">
+                <div className="spinner"></div>
+           .    </div>
+        );
+
+        const LoginView = ({ onLogin, setIsLoading }) => {
+            const [email, setEmail] = useState('admin');
+            const [password, setPassword] = useState('');
+            const [error, setError] = useState('');
+
+            const handleSubmit = async (e) => {
+                e.preventDefault();
+                setIsLoading(true);
+                const result = await apiCall('login', { email, password });
+                setIsLoading(false);
+                
+                if (result.success) {
+                    onLogin(result.user);
+                } else {
+                    setError(result.error || 'Credenciales incorrectas');
+                }
+            };
+
+            return (
+                <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-blue-100">
+                    <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-md fade-in">
+                        <div className="flex flex-col items-center mb-6">
+                            <div className="w-20 h-20 bg-blue-600 rounded-full flex items-center justify-center mb-4 text-white">
+                                <Icons.Car />
+                            </div>
+                            <h1 className="text-2xl font-bold text-gray-800">EllaVa</h1>
+                            <p className="text-gray-500 text-sm mt-1">Gestión de Traslados</p>
+                        </div>
+                        <form onSubmit={handleSubmit} className="space-y-4">
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">Nombre de Usuario</label>
+                                <div className="relative">
+                                    <span className="absolute left-3 top-3 text-gray-400"><Icons.User /></span>
+                                    <input type="text" value={email} onChange={(e) => setEmail(e.target.value)} required
+                                        className="w-full pl-10 pr-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none" placeholder="melchukker2000@gmail.com" />
+                                </div>
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">Contraseña</label>
+                                <div className="relative">
+                                    <span className="absolute left-3 top-3 text-gray-400"><Icons.Lock /></span>
+                                    <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required
+                                        className="w-full pl-10 pr-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none" placeholder="••••••••" />
+                                </div>
+                            </div>
+                            {error && <div className="bg-red-50 text-red-600 text-sm p-3 rounded-lg">{error}</div>}
+                            <button type="submit" className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2.5 rounded-lg transition duration-200">
+                                Iniciar Sesión
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            );
+        };
+
+        const DashboardView = ({ setView, patients, trips }) => {
+            const buttons = [
+                { id: 'patients', label: 'Cargar Pasajero', icon: <Icons.Users />, color: 'from-blue-500 to-blue-600', desc: 'Registrar y gestionar pacientes' },
+                { id: 'trips', label: 'Programar Viaje', icon: <Icons.Car />, color: 'from-emerald-500 to-emerald-600', desc: 'Agendar traslados de pacientes' },
+                { id: 'calendar', label: 'Calendario', icon: <Icons.Calendar />, color: 'from-purple-500 to-purple-600', desc: 'Vista mensual, semanal y diaria' },
+                { id: 'contact', label: 'Contáctanos', icon: <Icons.Mail />, color: 'from-amber-500 to-amber-600', desc: 'Información y formulario de contacto' },
+            ];
+
+            return (
+                <div className="p-6 fade-in">
+                    <h2 className="text-2xl font-bold text-gray-800 mb-2">Panel Principal</h2>
+                    <p className="text-gray-500 mb-8">Bienvenido al sistema de gestión de traslados. Seleccione una opción:</p>
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                        {buttons.map(btn => (
+                            <button key={btn.id} onClick={() => setView(btn.id)}
+                                className={`bg-gradient-to-br ${btn.color} text-white p-6 rounded-2xl shadow-lg hover:shadow-xl transform hover:-translate-y-1 transition-all duration-300 text-left`}>
+                                <div className="bg-white bg-opacity-20 w-12 h-12 rounded-lg flex items-center justify-center mb-4">
+                                    {btn.icon}
+                                </div>
+                                <h3 className="text-lg font-bold mb-1">{btn.label}</h3>
+                                <p className="text-sm text-white text-opacity-90">{btn.desc}</p>
+                                {btn.id === 'patients' && <p className="text-xs mt-2 opacity-75">{patients.length} registrados</p>}
+                                {btn.id === 'trips' && <p className="text-xs mt-2 opacity-75">{trips.length} programados</p>}
+                            </button>
+                        ))}
+                    </div>
+                </div>
+            );
+        };
+
+const PatientView = ({ patients, setPatients, addAudit, setIsLoading }) => {
+    const [search, setSearch] = useState('');
+    const [showModal, setShowModal] = useState(false);
+    const [editingPatient, setEditingPatient] = useState(null);
+    const [form, setForm] = useState({ id: '', nombre: '', apellido: '', telefono: '', direccion: '', observaciones: '', tratamiento: '' });
+
+    const filtered = patients.filter(p => 
+        `${p.nombre} ${p.apellido}`.toLowerCase().includes(search.toLowerCase()) ||
+        p.id.toString().includes(search)
+    );
+
+    const openNew = () => {
+        setEditingPatient(null);
+        setForm({ id: '', nombre: '', apellido: '', telefono: '', direccion: '', observaciones: '', tratamiento: '' });
+        setShowModal(true);
+    };
+
+    const openEdit = (p) => {
+        setEditingPatient(p);
+        setForm(p);
+        setShowModal(true);
+    };
+
+    const handleSave = async (e) => {
+        e.preventDefault();
+        if (!form.nombre || !form.apellido) return alert('Nombre y Apellido son obligatorios');
+        
+        setIsLoading(true);
+        const action = editingPatient ? 'editarPaciente' : 'crearPaciente';
+        const result = await apiCall(action, form);
+        setIsLoading(false);
+
+        if (result.success || result.id) {
+            await addAudit(`${editingPatient ? 'Edición' : 'Creación'} de paciente: ${form.nombre} ${form.apellido}`);
+            setShowModal(false);
+            window.dispatchEvent(new Event('refreshData'));
+        } else {
+            alert('Error al guardar: ' + (result.error || 'Desconocido'));
+        }
+    };
+
+    return (
+        <div className="p-6 fade-in">
+            <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
+                <div>
+                    <h2 className="text-2xl font-bold text-gray-800">Gestión de Pacientes</h2>
+                    <p className="text-gray-500 text-sm">Total registrados: {patients.length}</p>
+                </div>
+                <button onClick={openNew} className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg flex items-center gap-2 transition">
+                    <Icons.Plus /> Nuevo Paciente
+                </button>
+            </div>
+
+            <div className="bg-white rounded-xl shadow p-4 mb-6">
+                <div className="relative">
+                    <span className="absolute left-3 top-3 text-gray-400"><Icons.Search /></span>
+                    <input type="text" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Buscar por nombre o ID..."
+                        className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" />
+                </div>
+            </div>
+
+            <div className="bg-white rounded-xl shadow overflow-hidden">
+                <div className="overflow-x-auto">
+                    <table className="w-full">
+                        <thead className="bg-gray-50 border-b">
+                            <tr>
+                                <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase">ID</th>
+                                <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Nombre</th>
+                                <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Apellido</th>
+                                <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Teléfono</th>
+                                <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Dirección</th>
+                                <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Tratamiento</th>
+                                <th className="px-6 py-3 text-right text-xs font-semibold text-gray-600 uppercase">Acciones</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-200">
+                            {filtered.map(p => (
+                                <tr key={p.id} className="hover:bg-gray-50">
+                                    <td className="px-6 py-4 text-sm text-gray-900 font-semibold">{p.id}</td>
+                                    <td className="px-6 py-4 text-sm text-gray-900">{p.nombre}</td>
+                                    <td className="px-6 py-4 text-sm text-gray-900">{p.apellido}</td>
+                                    <td className="px-6 py-4 text-sm text-gray-600">{p.telefono}</td>
+                                    <td className="px-6 py-4 text-sm text-gray-600 truncate max-w-xs">{p.direccion}</td>
+                                    <td className="px-6 py-4 text-sm text-gray-600 truncate max-w-xs">{p.tratamiento || '-'}</td>
+                                    <td className="px-6 py-4 text-right">
+                                        <button onClick={() => openEdit(p)} className="text-blue-600 hover:text-blue-800 mr-3"><Icons.Edit /></button>
+                                    </td>
+                                </tr>
+                            ))}
+                            {filtered.length === 0 && <tr><td colSpan="7" className="px-6 py-8 text-center text-gray-500">No se encontraron pacientes</td></tr>}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            {showModal && (
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg fade-in max-h-[90vh] overflow-y-auto">
+                        <div className="flex justify-between items-center p-6 border-b sticky top-0 bg-white">
+                            <h3 className="text-xl font-bold text-gray-800">{editingPatient ? 'Editar Paciente' : 'Nuevo Paciente'}</h3>
+                            <button onClick={() => setShowModal(false)} className="text-gray-400 hover:text-gray-600"><Icons.X /></button>
+                        </div>
+                        <form onSubmit={handleSave} className="p-6 space-y-4">
+                            <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">Nombre *</label>
+                                    <input type="text" value={form.nombre} onChange={(e) => setForm({...form, nombre: e.target.value})} required
+                                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">Apellido *</label>
+                                    <input type="text" value={form.apellido} onChange={(e) => setForm({...form, apellido: e.target.value})} required
+                                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" />
+                                </div>
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">Teléfono</label>
+                                <input type="text" value={form.telefono} onChange={(e) => setForm({...form, telefono: e.target.value})}
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">Dirección</label>
+                                <input type="text" value={form.direccion} onChange={(e) => setForm({...form, direccion: e.target.value})}
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">Tratamiento</label>
+                                <input type="text" value={form.tratamiento} onChange={(e) => setForm({...form, tratamiento: e.target.value})} placeholder="Ej: Diálisis, Quimioterapia, etc."
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">Observaciones</label>
+                                <textarea value={form.observaciones} onChange={(e) => setForm({...form, observaciones: e.target.value})} rows="3"
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"></textarea>
+                            </div>
+                            <div className="flex justify-end gap-3 pt-2 sticky bottom-0 bg-white pb-2">
+                                <button type="button" onClick={() => setShowModal(false)} className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition">Cancelar</button>
+                                <button type="submit" className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition">Guardar</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+};
+
+        const TripView = ({ trips, setTrips, patients, addAudit, setIsLoading }) => {
+            const [showModal, setShowModal] = useState(false);
+            const [editingTrip, setEditingTrip] = useState(null);
+            const [filterStatus, setFilterStatus] = useState('Todos');
+            const [form, setForm] = useState({ id: '', paciente_id: '', paciente_nombre: '', fecha_hora: '', origen: '', destino: '', observaciones: '', estado: 'Pendiente', importe: 0 });
+
+            const filtered = filterStatus === 'Todos' ? trips : trips.filter(t => t.estado === filterStatus);
+
+            const openNew = () => {
+                setEditingTrip(null);
+                const now = new Date();
+                const dateStr = now.toISOString().split('T')[0];
+                const timeStr = now.toTimeString().slice(0, 5);
+                setForm({ id: '', paciente_id: '', paciente_nombre: '', fecha_hora: `${dateStr}T${timeStr}`, origen: '', destino: '', observaciones: '', estado: 'Pendiente', importe: 0 });
+                setShowModal(true);
+            };
+
+            const openEdit = (t) => {
+                setEditingTrip(t);
+                setForm(t);
+                setShowModal(true);
+            };
+
+            const handlePatientChange = (e) => {
+                const pid = e.target.value;
+                const p = patients.find(x => x.id.toString() === pid);
+                // Autocompletar origen con la dirección del pasajero si es un viaje nuevo
+                const newOrigen = (!editingTrip && p && p.direccion) ? p.direccion : form.origen;
+                setForm({ 
+                    ...form, 
+                    paciente_id: pid, 
+                    paciente_nombre: p ? `${p.nombre} ${p.apellido}` : '',
+                    origen: newOrigen
+                });
+            };
+
+            const handleSave = async (e) => {
+                e.preventDefault();
+                if (!form.paciente_id || !form.fecha_hora || !form.origen || !form.destino) return alert('Complete los campos obligatorios');
+                
+                setIsLoading(true);
+                const action = editingTrip ? 'editarViaje' : 'crearViaje';
+                const payload = { ...form, importe: parseFloat(form.importe) || 0 };
+                const result = await apiCall(action, payload);
+                setIsLoading(false);
+
+                if (result.success || result.id) {
+                    const accion = editingTrip ? `Modificación de viaje para ${form.paciente_nombre}` : `Creación de viaje para ${form.paciente_nombre}`;
+                    await addAudit(accion);
+                    setShowModal(false);
+                    window.dispatchEvent(new Event('refreshData'));
+                } else {
+                    alert('Error al guardar: ' + (result.error || 'Desconocido'));
+                }
+            };
+
+            const handleDelete = async (id) => {
+                if (!confirm('¿Está seguro de eliminar este viaje?')) return;
+                const trip = trips.find(t => t.id === id);
+                setIsLoading(true);
+                const result = await apiCall('eliminarViaje', { id });
+                setIsLoading(false);
+                
+                if (result.success) {
+                    await addAudit(`Eliminación de viaje para ${trip.paciente_nombre}`);
+                    window.dispatchEvent(new Event('refreshData'));
+                } else {
+                    alert('Error al eliminar: ' + (result.error || 'Desconocido'));
+                }
+            };
+
+            const getStatusColor = (estado) => {
+                switch(estado) {
+                    case 'Pendiente': return 'bg-yellow-100 text-yellow-800';
+                    case 'Confirmado': return 'bg-blue-100 text-blue-800';
+                    case 'Completado': return 'bg-green-100 text-green-800';
+                    case 'Cancelado': return 'bg-red-100 text-red-800';
+                    default: return 'bg-gray-100 text-gray-800';
+                }
+            };
+
+            const formatMoney = (n) => {
+                if (!n && n !== 0) return '-';
+                return '$ ' + Number(n).toLocaleString('es-AR', { minimumFractionDigits: 2 });
+            };
+
+            return (
+                <div className="p-6 fade-in">
+                    <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
+                        <div>
+                            <h2 className="text-2xl font-bold text-gray-800">Programación de Viajes</h2>
+                            <p className="text-gray-500 text-sm">Total programados: {trips.length}</p>
+                        </div>
+                        <button onClick={openNew} className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg flex items-center gap-2 transition">
+                            <Icons.Plus /> Programar Viaje
+                        </button>
+                    </div>
+
+                    <div className="bg-white rounded-xl shadow p-4 mb-6 flex flex-wrap gap-2">
+                        {['Todos', 'Pendiente', 'Confirmado', 'Completado', 'Cancelado'].map(s => (
+                            <button key={s} onClick={() => setFilterStatus(s)}
+                                className={`px-4 py-2 rounded-lg text-sm font-medium transition ${filterStatus === s ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+                                {s}
+                            </button>
+                        ))}
+                    </div>
+
+                    <div className="bg-white rounded-xl shadow overflow-hidden">
+                        <div className="overflow-x-auto">
+                            <table className="w-full">
+                                <thead className="bg-gray-50 border-b">
+                                    <tr>
+                                        <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Paciente</th>
+                                        <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Fecha/Hora</th>
+                                        <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Origen</th>
+                                        <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Destino</th>
+                                        <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Estado</th>
+                                        <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Importe</th>
+                                        <th className="px-6 py-3 text-right text-xs font-semibold text-gray-600 uppercase">Acciones</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-gray-200">
+                                    {filtered.map(t => (
+                                        <tr key={t.id} className="hover:bg-gray-50">
+                                            <td className="px-6 py-4 text-sm font-medium text-gray-900">{t.paciente_nombre}</td>
+                                            <td className="px-6 py-4 text-sm text-gray-600 whitespace-nowrap">{t.fecha_hora ? new Date(t.fecha_hora).toLocaleString('es-AR') : '-'}</td>
+                                            <td className="px-6 py-4 text-sm text-gray-600 truncate max-w-[150px]" title={t.origen}>{t.origen}</td>
+                                            <td className="px-6 py-4 text-sm text-gray-600 truncate max-w-[150px]" title={t.destino}>{t.destino}</td>
+                                            <td className="px-6 py-4"><span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${getStatusColor(t.estado)}`}>{t.estado}</span></td>
+                                            <td className="px-6 py-4 text-sm text-gray-900 font-medium">{formatMoney(t.importe)}</td>
+                                            <td className="px-6 py-4 text-right">
+                                                <button onClick={() => openEdit(t)} className="text-blue-600 hover:text-blue-800 mr-3 inline-block"><Icons.Edit /></button>
+                                                <button onClick={() => handleDelete(t.id)} className="text-red-600 hover:text-red-800 inline-block"><Icons.Trash /></button>
+                                            </td>
+                                        </tr>
+                                    ))}
+                                    {filtered.length === 0 && <tr><td colSpan="7" className="px-6 py-8 text-center text-gray-500">No hay viajes programados</td></tr>}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    {showModal && (
+                        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+                            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg fade-in max-h-[90vh] overflow-y-auto">
+                                <div className="flex justify-between items-center p-6 border-b sticky top-0 bg-white">
+                                    <h3 className="text-xl font-bold text-gray-800">{editingTrip ? 'Editar Viaje' : 'Programar Nuevo Viaje'}</h3>
+                                    <button onClick={() => setShowModal(false)} className="text-gray-400 hover:text-gray-600"><Icons.X /></button>
+                                </div>
+                                <form onSubmit={handleSave} className="p-6 space-y-4">
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 mb-1">Paciente *</label>
+                                        <select value={form.paciente_id} onChange={handlePatientChange} required
+                                            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none">
+                                            <option value="">Seleccione un paciente</option>
+                                            {patients.map(p => <option key={p.id} value={p.id}>{p.nombre} {p.apellido}</option>)}
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 mb-1">Fecha y Hora *</label>
+                                        <input type="datetime-local" value={form.fecha_hora ? form.fecha_hora.slice(0, 16) : ''} onChange={(e) => setForm({...form, fecha_hora: e.target.value})} required
+                                            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" />
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 mb-1">Origen *</label>
+                                        <input type="text" value={form.origen} onChange={(e) => setForm({...form, origen: e.target.value})} required placeholder="Dirección de origen"
+                                            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" />
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 mb-1">Destino *</label>
+                                        <input type="text" value={form.destino} onChange={(e) => setForm({...form, destino: e.target.value})} required placeholder="Dirección de destino"
+                                            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" />
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div>
+                                            <label className="block text-sm font-medium text-gray-700 mb-1">Estado</label>
+                                            <select value={form.estado} onChange={(e) => setForm({...form, estado: e.target.value})}
+                                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none">
+                                                <option value="Pendiente">Pendiente</option>
+                                                <option value="Confirmado">Confirmado</option>
+                                                <option value="Completado">Completado</option>
+                                                <option value="Cancelado">Cancelado</option>
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label className="block text-sm font-medium text-gray-700 mb-1">Importe ($)</label>
+                                            <div className="relative">
+                                                <span className="absolute left-3 top-2.5 text-gray-500">$</span>
+                                                <input type="number" step="0.01" min="0" value={form.importe} onChange={(e) => setForm({...form, importe: e.target.value})} placeholder="0.00"
+                                                    className="w-full pl-8 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" />
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 mb-1">Observaciones</label>
+                                        <textarea value={form.observaciones} onChange={(e) => setForm({...form, observaciones: e.target.value})} rows="3"
+                                            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"></textarea>
+                                    </div>
+                                    <div className="flex justify-end gap-3 pt-2 sticky bottom-0 bg-white pb-2">
+                                        <button type="button" onClick={() => setShowModal(false)} className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition">Cancelar</button>
+                                        <button type="submit" className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition">Guardar</button>
+                                    </div>
+6                                </form>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        const CalendarView = ({ trips, setTrips, patients, addAudit, setIsLoading }) => {
+            const calendarRef = useRef(null);
+            const calendarInstance = useRef(null);
+            const [selectedTrip, setSelectedTrip] = useState(null);
+            const [showModal, setShowModal] = useState(false);
+            const [editMode, setEditMode] = useState(false);
+            const [form, setForm] = useState(null);
+
+            useEffect(() => {
+                if (calendarRef.current && !calendarInstance.current && typeof window.FullCalendar !== 'undefined') {
+                    calendarInstance.current = new window.FullCalendar.Calendar(calendarRef.current, {
+                        initialView: 'dayGridMonth',
+                        locale: 'es',
+                        plugins: [window.FullCalendarDayGrid, window.FullCalendarTimeGrid, window.FullCalendarInteraction].filter(Boolean),
+                        headerToolbar: {
+                            left: 'prev,next today',
+                            center: 'title',
+                            right: 'dayGridMonth,timeGridWeek,timeGridDay'
+                        },
+                        events: trips.map(t => ({
+                            id: t.id,
+                            title: `${t.paciente_nombre} - ${t.estado}`,
+                            start: t.fecha_hora,
+                            backgroundColor: t.estado === 'Completado' ? '#10b981' : t.estado === 'Cancelado' ? '#ef4444' : t.estado === 'Confirmado' ? '#3b82f6' : '#f59e0b',
+                            borderColor: 'transparent',
+                            extendedProps: t
+                        })),
+                        eventClick: function(info) {
+                            setSelectedTrip(info.event.extendedProps);
+                            setEditMode(false);
+                            setShowModal(true);
+                        }
+                    });
+                    calendarInstance.current.render();
+                } else if (calendarInstance.current) {
+                    calendarInstance.current.removeAllEvents();
+                    calendarInstance.current.addEventSource(trips.map(t => ({
+                        id: t.id,
+                        title: `${t.paciente_nombre} - ${t.estado}`,
+                        start: t.fecha_hora,
+                        backgroundColor: t.estado === 'Completado' ? '#10b981' : t.estado === 'Cancelado' ? '#ef4444' : t.estado === 'Confirmado' ? '#3b82f6' : '#f59e0b',
+                        borderColor: 'transparent',
+                        extendedProps: t
+                    })));
+                }
+            }, [trips]);
+
+            const handleDelete = async () => {
+                if (!confirm('¿Eliminar este viaje?')) return;
+                setIsLoading(true);
+                const result = await apiCall('eliminarViaje', { id: selectedTrip.id });
+                setIsLoading(false);
+                if (result.success) {
+                    await addAudit(`Eliminación de viaje (desde calendario) para ${selectedTrip.paciente_nombre}`);
+                    setShowModal(false);
+                    window.dispatchEvent(new Event('refreshData'));
+                }
+            };
+
+            const startEdit = () => {
+                setForm(selectedTrip);
+                setEditMode(true);
+            };
+
+            const saveEdit = async (e) => {
+                e.preventDefault();
+                setIsLoading(true);
+                const payload = { ...form, importe: parseFloat(form.importe) || 0 };
+                const result = await apiCall('editarViaje', payload);
+                setIsLoading(false);
+                if (result.success) {
+                    await addAudit(`Modificación de viaje (desde calendario) para ${form.paciente_nombre}`);
+                    setShowModal(false);
+                    window.dispatchEvent(new Event('refreshData'));
+                } else {
+                    alert('Error: ' + (result.error || 'Desconocido'));
+                }
+            };
+
+            const getStatusColor = (estado) => {
+                switch(estado) {
+                    case 'Pendiente': return 'bg-yellow-100 text-yellow-800';
+                    case 'Confirmado': return 'bg-blue-100 text-blue-800';
+                    case 'Completado': return 'bg-green-100 text-green-800';
+                    case 'Cancelado': return 'bg-red-100 text-red-800';
+                    default: return 'bg-gray-100 text-gray-800';
+                }
+            };
+
+            const formatMoney = (n) => {
+                if (!n && n !== 0) return '-';
+                return '$ ' + Number(n).toLocaleString('es-AR', { minimumFractionDigits: 2 });
+            };
+
+            return (
+                <div className="p-6 fade-in">
+                    <h2 className="text-2xl font-bold text-gray-800 mb-6">Calendario de Viajes</h2>
+                    <div className="bg-white p-4 rounded-xl shadow" ref={calendarRef}></div>
+
+                    {showModal && !editMode && selectedTrip && (
+                        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+                            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md fade-in">
+                                <div className="flex justify-between items-center p-6 border-b">
+                                    <h3 className="text-xl font-bold text-gray-800">Detalles del Viaje</h3>
+                                    <button onClick={() => setShowModal(false)} className="text-gray-400 hover:text-gray-600"><Icons.X /></button>
+                                </div>
+                                <div className="p-6 space-y-3">
+                                    <p className="text-lg font-semibold text-gray-900">{selectedTrip.paciente_nombre}</p>
+                                    <p className="text-sm text-gray-600"><strong>Fecha:</strong> {selectedTrip.fecha_hora ? new Date(selectedTrip.fecha_hora).toLocaleString('es-AR') : '-'}</p>
+                                    <p className="text-sm text-gray-600"><strong>Origen:</strong> {selectedTrip.origen}</p>
+                                    <p className="text-sm text-gray-600"><strong>Destino:</strong> {selectedTrip.destino}</p>
+                                    <p className="text-sm text-gray-600"><strong>Importe:</strong> {formatMoney(selectedTrip.importe)}</p>
+                                    <p className="text-sm"><strong>Estado:</strong> <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ml-2 ${getStatusColor(selectedTrip.estado)}`}>{selectedTrip.estado}</span></p>
+                                    {selectedTrip.observaciones && <p className="text-sm text-gray-600"><strong>Observaciones:</strong> {selectedTrip.observaciones}</p>}
+                                </div>
+                                <div className="p-6 border-t flex justify-end gap-3">
+                                    <button onClick={handleDelete} className="px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition">Eliminar</button>
+                                    <button onClick={startEdit} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition">Editar</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {showModal && editMode && form && (
+                        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+                            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg fade-in max-h-[90vh] overflow-y-auto">
+                                <div className="flex justify-between items-center p-6 border-b sticky top-0 bg-white">
+                                    <h3 className="text-xl font-bold text-gray-800">Editar Viaje</h3>
+                                    <button onClick={() => setEditMode(false)} className="text-gray-400 hover:text-gray-600"><Icons.X /></button>
+                                </div>
+                                <form onSubmit={saveEdit} className="p-6 space-y-4">
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 mb-1">Paciente</label>
+                                        <input type="text" value={form.paciente_nombre} disabled className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-100" />
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 mb-1">Fecha y Hora *</label>
+                                        <input type="datetime-local" value={form.fecha_hora ? form.fecha_hora.slice(0, 16) : ''} onChange={(e) => setForm({...form, fecha_hora: e.target.value})} required
+                                            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" />
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 mb-1">Origen *</label>
+                                        <input type="text" value={form.origen} onChange={(e) => setForm({...form, origen: e.target.value})} required
+                                            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" />
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 mb-1">Destino *</label>
+                                        <input type="text" value={form.destino} onChange={(e) => setForm({...form, destino: e.target.value})} required
+                                            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" />
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div>
+                                            <label className="block text-sm font-medium text-gray-700 mb-1">Estado</label>
+                                            <select value={form.estado} onChange={(e) => setForm({...form, estado: e.target.value})}
+                                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none">
+                                                <option value="Pendiente">Pendiente</option>
+                                                <option value="Confirmado">Confirmado</option>
+                                                <option value="Completado">Completado</option>
+                                                <option value="Cancelado">Cancelado</option>
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label className="block text-sm font-medium text-gray-700 mb-1">Importe ($)</label>
+                                            <div className="relative">
+                                                <span className="absolute left-3 top-2.5 text-gray-500">$</span>
+                                                <input type="number" step="0.01" min="0" value={form.importe} onChange={(e) => setForm({...form, importe: e.target.value})} placeholder="0.00"
+                                                    className="w-full pl-8 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" />
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 mb-1">Observaciones</label>
+                                        <textarea value={form.observaciones} onChange={(e) => setForm({...form, observaciones: e.target.value})} rows="3"
+                                            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"></textarea>
+                                    </div>
+                                    <div className="flex justify-end gap-3 pt-2">
+                                        <button type="button" onClick={() => setEditMode(false)} className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition">Cancelar</button>
+                                        <button type="submit" className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition">Guardar Cambios</button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        const ContactView = () => {
+            const [form, setForm] = useState({ nombre: '', email: '', mensaje: '' });
+            const [sent, setSent] = useState(false);
+
+            const handleSubmit = (e) => {
+                e.preventDefault();
+                setSent(true);
+                setTimeout(() => setSent(false), 3000);
+                setForm({ nombre: '', email: '', mensaje: '' });
+            };
+
+            return (
+                <div className="p-6 fade-in">
+                    <h2 className="text-2xl font-bold text-gray-800 mb-6">Contáctanos</h2>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+                        <div className="bg-white p-6 rounded-xl shadow flex items-start gap-4">
+                            <div className="bg-blue-100 p-3 rounded-lg text-blue-600"><Icons.Phone /></div>
+                            <div>
+                                <h3 className="font-semibold text-gray-800">Teléfono</h3>
+                                <p className="text-gray-600 text-sm">+54 11 4567-8900</p>
+                            </div>
+                        </div>
+                        <div className="bg-white p-6 rounded-xl shadow flex items-start gap-4">
+                            <div className="bg-emerald-100 p-3 rounded-lg text-emerald-600"><Icons.Mail /></div>
+                            <div>
+                                <h3 className="font-semibold text-gray-800">Correo electrónico</h3>
+                                <p className="text-gray-600 text-sm">contacto@labtraslados.com</p>
+                            </div>
+                        </div>
+                        <div className="bg-white p-6 rounded-xl shadow flex items-start gap-4">
+                            <div className="bg-purple-100 p-3 rounded-lg text-purple-600"><Icons.MapPin /></div>
+                            <div>
+                                <h3 className="font-semibold text-gray-800">Dirección</h3>
+                                <p className="text-gray-600 text-sm">Av. Salud 1234, CABA, Argentina</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="bg-white p-8 rounded-xl shadow max-w-2xl">
+                        <h3 className="text-xl font-bold text-gray-800 mb-4">Envíanos un mensaje</h3>
+                        {sent && <div className="bg-green-50 text-green-700 p-3 rounded-lg mb-4 text-sm">✓ Mensaje enviado correctamente. Nos pondremos en contacto pronto.</div>}
+                        <form onSubmit={handleSubmit} className="space-y-4">
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">Nombre</label>
+                                <input type="text" value={form.nombre} onChange={(e) => setForm({...form, nombre: e.target.value})} required
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">Correo electrónico</label>
+                                <input type="email" value={form.email} onChange={(e) => setForm({...form, email: e.target.value})} required
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">Mensaje</label>
+                                <textarea value={form.mensaje} onChange={(e) => setForm({...form, mensaje: e.target.value})} rows="4" required
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"></textarea>
+                            </div>
+                            <button type="submit" className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2.5 rounded-lg transition font-medium">Enviar Mensaje</button>
+                        </form>
+                    </div>
+                </div>
+            );
+        };
+
+        const App = () => {
+            const [user, setUser] = useState(null);
+            const [view, setView] = useState('login');
+            const [patients, setPatients] = useState([]);
+            const [trips, setTrips] = useState([]);
+            const [isLoading, setIsLoading] = useState(false);
+
+            const loadData = async () => {
+                setIsLoading(true);
+                try {
+                    const [pRes, tRes] = await Promise.all([
+                        apiCall('getPacientes'),
+                        apiCall('getViajes')
+                    ]);
+                    if (pRes && !pRes.error) setPatients(pRes);
+                    if (tRes && !tRes.error) setTrips(tRes);
+                } catch (e) {
+                    console.error('Error cargando datos:', e);
+                }
+                setIsLoading(false);
+            };
+
+            useEffect(() => {
+                const savedUser = localStorage.getItem('currentUser');
+                if (savedUser) { 
+                    setUser(JSON.parse(savedUser)); 
+                    setView('dashboard');
+                    loadData();
+                }
+
+                const handleRefresh = () => loadData();
+                window.addEventListener('refreshData', handleRefresh);
+                return () => window.removeEventListener('refreshData', handleRefresh);
+            }, []);
+
+            const addAudit = async (accion) => {
+                await apiCall('auditar', { usuario_id: user?.id, accion });
+            };
+
+            const handleLogin = (u) => {
+                setUser(u);
+                localStorage.setItem('currentUser', JSON.stringify(u));
+                setView('dashboard');
+                loadData();
+            };
+
+            const handleLogout = () => {
+                setUser(null);
+                localStorage.removeItem('currentUser');
+                setView('login');
+            };
+
+            if (!user || view === 'login') return <LoginView onLogin={handleLogin} setIsLoading={setIsLoading} />;
+
+            const navItems = [
+                { id: 'dashboard', label: 'Inicio', icon: <Icons.FileText /> },
+                { id: 'patients', label: 'Pacientes', icon: <Icons.Users /> },
+                { id: 'trips', label: 'Viajes', icon: <Icons.Car /> },
+                { id: 'calendar', label: 'Calendario', icon: <Icons.Calendar /> },
+                { id: 'contact', label: 'Contacto', icon: <Icons.Mail /> },
+            ];
+
+            return (
+                <div className="min-h-screen flex">
+                    {isLoading && <LoadingSpinner />}
+                    <aside className="w-64 bg-slate-900 text-white flex flex-col fixed h-full z-40">
+                        <div className="p-6 border-b border-slate-800 flex items-center gap-3">
+                            <div className="w-10 h-10 bg-blue-600 rounded-lg flex items-center justify-center">
+                                <Icons.Car />
+                            </div>
+                            <div>
+                                <h1 className="font-bold text-lg leading-tight">EllaVa</h1>
+                                <p className="text-xs text-slate-400">Gestión de Traslados</p>
+                            </div>
+                        </div>
+                        <nav className="flex-1 p-4 space-y-1">
+                            {navItems.map(item => (
+                                <button key={item.id} onClick={() => setView(item.id)}
+                                    className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition ${view === item.id ? 'bg-blue-600 text-white' : 'text-slate-300 hover:bg-slate-800 hover:text-white'}`}>
+                                    {item.icon} {item.label}
+                                </button>
+                            ))}
+                        </nav>
+                        <div className="p-4 border-t border-slate-800">
+                            <div className="flex items-center gap-3 mb-3 px-2">
+                                <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-sm font-bold">{user.nombre[0]}</div>
+                                <div className="flex-1 min-w-0">
+                                    <p className="text-sm font-medium truncate">{user.nombre}</p>
+                                    <p className="text-xs text-slate-400 truncate">{user.email}</p>
+                                </div>
+                            </div>
+                            <button onClick={handleLogout} className="w-full flex items-center gap-2 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800 rounded-lg transition">
+                                <Icons.LogOut /> Cerrar Sesión
+                            </button>
+                        </div>
+                    </aside>
+
+                    <main className="flex-1 ml-64">
+                        {view === 'dashboard' && <DashboardView setView={setView} patients={patients} trips={trips} />}
+                        {view === 'patients' && <PatientView patients={patients} setPatients={setPatients} addAudit={addAudit} setIsLoading={setIsLoading} />}
+                        {view === 'trips' && <TripView trips={trips} setTrips={setTrips} patients={patients} addAudit={addAudit} setIsLoading={setIsLoading} />}
+                        {view === 'calendar' && <CalendarView trips={trips} setTrips={setTrips} patients={patients} addAudit={addAudit} setIsLoading={setIsLoading} />}
+                        {view === 'contact' && <ContactView />}
+                    </main>
+                </div>
+            );
+        };
+
+        ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+    </script>
+</body>
+</html>
+```
