@@ -282,7 +282,7 @@
             );
         };
 
-const PatientView = ({ patients, setPatients, addAudit, setIsLoading }) => {
+const PatientView = ({ patients, setPatients, addAudit, setIsLoading, loadData }) => {
     const [search, setSearch] = useState('');
     const [showModal, setShowModal] = useState(false);
     const [editingPatient, setEditingPatient] = useState(null);
@@ -442,7 +442,7 @@ const PatientView = ({ patients, setPatients, addAudit, setIsLoading }) => {
     );
 };
 
-const TripView = ({ trips, setTrips, patients, addAudit, setIsLoading, user }) => {
+const TripView = ({ trips, setTrips, patients, addAudit, setIsLoading, user, loadData }) => {
     const [showModal, setShowModal] = useState(false);
     const [editingTrip, setEditingTrip] = useState(null);
     const [filterStatus, setFilterStatus] = useState('Todos');
@@ -718,7 +718,7 @@ const TripView = ({ trips, setTrips, patients, addAudit, setIsLoading, user }) =
     );
 };
 
-        const CalendarView = ({ trips, setTrips, patients, addAudit, setIsLoading }) => {
+        const CalendarView = ({ trips, setTrips, patients, addAudit, setIsLoading, loadData }) => {
             const calendarRef = useRef(null);
             const calendarInstance = useRef(null);
             const [selectedTrip, setSelectedTrip] = useState(null);
@@ -1076,9 +1076,9 @@ const saveEdit = async (e) => {
 
                     <main className="flex-1 ml-64">
                         {view === 'dashboard' && <DashboardView setView={setView} patients={patients} trips={trips} />}
-                        {view === 'patients' && <PatientView patients={patients} setPatients={setPatients} addAudit={addAudit} setIsLoading={setIsLoading} />}
-                        {view === 'trips' && <TripView trips={trips} setTrips={setTrips} patients={patients} addAudit={addAudit} setIsLoading={setIsLoading} user={user} />}
-                        {view === 'calendar' && <CalendarView trips={trips} setTrips={setTrips} patients={patients} addAudit={addAudit} setIsLoading={setIsLoading} />}
+                        {view === 'patients' && <PatientView patients={patients} setPatients={setPatients} addAudit={addAudit} setIsLoading={setIsLoading} loadData={loadData} />}
+                        {view === 'trips' && <TripView trips={trips} setTrips={setTrips} patients={patients} addAudit={addAudit} setIsLoading={setIsLoading} user={user} loadData={loadData} />}
+                        {view === 'calendar' && <CalendarView trips={trips} setTrips={setTrips} patients={patients} addAudit={addAudit} setIsLoading={setIsLoading} loadData={loadData} />}
                         {view === 'contact' && <ContactView />}
                     </main>
                 </div>
