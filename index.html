@@ -157,7 +157,7 @@
         const { useState, useEffect, useRef } = React;
 
         // ⚠️ REEMPLAZA ESTA URL CON LA DE TU APLICACIÓN WEB DE GOOGLE APPS SCRIPT
-        const API_URL = "https://script.google.com/macros/s/AKfycbxoyAWKSUrV80jZ1T2jxSnCOwtCYs5T_o3TxehFpt2jaaulS1MCvy4LKzhikZDGKeZn0w/exec";
+        const API_URL = "https://script.google.com/macros/s/AKfycbzghRGjwllfns4XJU9_3OeB0M-Rtx8BuW_ydeh3TFnOsUeBPj447tEYAT8JS3zASLI1TQ/exec";
 
         const apiCall = async (action, payload = {}) => {
             try {
@@ -306,23 +306,35 @@ const PatientView = ({ patients, setPatients, addAudit, setIsLoading }) => {
         setShowModal(true);
     };
 
-    const handleSave = async (e) => {
-        e.preventDefault();
-        if (!form.protocolo || !form.nombre || !form.apellido) return alert('Protocolo, Nombre y Apellido son obligatorios');
-        
-        setIsLoading(true);
+   const handleSave = async (e) => {
+    e.preventDefault();
+    if (!form.protocolo || !form.nombre || !form.apellido) return alert('Protocolo, Nombre y Apellido son obligatorios');
+    
+    setIsLoading(true);
+    try {
+        // 1. Guardar el paciente
         const action = editingPatient ? 'editarPaciente' : 'crearPaciente';
         const result = await apiCall(action, form);
-        setIsLoading(false);
-
-        if (result.success || result.id) {
-            await addAudit(`${editingPatient ? 'Edición' : 'Creación'} de paciente: ${form.protocolo} - ${form.nombre} ${form.apellido}`);
-            setShowModal(false);
-            window.dispatchEvent(new Event('refreshData'));
-        } else {
-            alert('Error al guardar: ' + (result.error || 'Desconocido'));
+        
+        if (!result.success && !result.id) {
+            throw new Error(result.error || 'Error al guardar');
         }
-    };
+        
+        // 2. Registrar auditoría (sin soltar el spinner)
+        await addAudit(`${editingPatient ? 'Edición' : 'Creación'} de paciente: ${form.protocolo} - ${form.nombre} ${form.apellido}`);
+        
+        // 3. Cerrar modal ANTES de recargar (mejor UX)
+        setShowModal(false);
+        
+        // 4. Recargar datos (el spinner sigue activo)
+        await loadData();
+        
+    } catch (error) {
+        alert('Error: ' + error.message);
+    } finally {
+        setIsLoading(false); // Solo se desactiva al final de todo
+    }
+};
 
     return (
         <div className="p-6 fade-in">
@@ -430,7 +442,7 @@ const PatientView = ({ patients, setPatients, addAudit, setIsLoading }) => {
     );
 };
 
-const TripView = ({ trips, setTrips, patients, addAudit, setIsLoading }) => {
+const TripView = ({ trips, setTrips, patients, addAudit, setIsLoading, user }) => {
     const [showModal, setShowModal] = useState(false);
     const [editingTrip, setEditingTrip] = useState(null);
     const [filterStatus, setFilterStatus] = useState('Todos');
@@ -503,41 +515,57 @@ const TripView = ({ trips, setTrips, patients, addAudit, setIsLoading }) => {
     };
 
     const handleSave = async (e) => {
-        e.preventDefault();
-        if (!form.protocolo || !form.paciente_id || !form.fecha_hora || !form.origen || !form.destino) {
-            return alert('Complete todos los campos obligatorios');
+    e.preventDefault();
+    if (!form.protocolo || !form.paciente_id || !form.fecha_hora || !form.origen || !form.destino) {
+        return alert('Complete todos los campos obligatorios');
+    }
+    
+    setIsLoading(true);
+    try {
+        const action = editingTrip ? 'editarViaje' : 'crearViaje';
+        const payload = { 
+            ...form, 
+            importe: parseFloat(form.importe) || 0,
+            responsable: user.nombre // ← AGREGAR ESTA LÍNEA
+        };
+        const result = await apiCall(action, payload);
+        
+        if (!result.success && !result.id) {
+            throw new Error(result.error || 'Error al guardar');
         }
         
-        setIsLoading(true);
-        const action = editingTrip ? 'editarViaje' : 'crearViaje';
-        const payload = { ...form, importe: parseFloat(form.importe) || 0 };
-        const result = await apiCall(action, payload);
+        const accion = editingTrip 
+            ? `Modificación de viaje para ${form.paciente_nombre} (${form.protocolo})` 
+            : `Creación de viaje para ${form.paciente_nombre} (${form.protocolo})`;
+        
+        await addAudit(accion);
+        setShowModal(false);
+        await loadData();
+        
+    } catch (error) {
+        alert('Error: ' + error.message);
+    } finally {
         setIsLoading(false);
-
-        if (result.success || result.id) {
-            const accion = editingTrip ? `Modificación de viaje para ${form.paciente_nombre} (${form.protocolo})` : `Creación de viaje para ${form.paciente_nombre} (${form.protocolo})`;
-            await addAudit(accion);
-            setShowModal(false);
-            window.dispatchEvent(new Event('refreshData'));
-        } else {
-            alert('Error al guardar: ' + (result.error || 'Desconocido'));
-        }
-    };
+    }
+};
 
     const handleDelete = async (id) => {
-        if (!confirm('¿Está seguro de eliminar este viaje?')) return;
-        const trip = trips.find(t => t.id === id);
-        setIsLoading(true);
+    if (!confirm('¿Está seguro de eliminar este viaje?')) return;
+    const trip = trips.find(t => t.id === id);
+    
+    setIsLoading(true);
+    try {
         const result = await apiCall('eliminarViaje', { id });
-        setIsLoading(false);
+        if (!result.success) throw new Error(result.error || 'Error al eliminar');
         
-        if (result.success) {
-            await addAudit(`Eliminación de viaje para ${trip.paciente_nombre}`);
-            window.dispatchEvent(new Event('refreshData'));
-        } else {
-            alert('Error al eliminar: ' + (result.error || 'Desconocido'));
-        }
-    };
+        await addAudit(`Eliminación de viaje para ${trip.paciente_nombre}`);
+        await loadData();
+    } catch (error) {
+        alert('Error: ' + error.message);
+    } finally {
+        setIsLoading(false);
+    }
+};
 
     const getStatusColor = (estado) => {
         switch(estado) {
@@ -735,37 +763,45 @@ const TripView = ({ trips, setTrips, patients, addAudit, setIsLoading }) => {
                 }
             }, [trips]);
 
-            const handleDelete = async () => {
-                if (!confirm('¿Eliminar este viaje?')) return;
-                setIsLoading(true);
-                const result = await apiCall('eliminarViaje', { id: selectedTrip.id });
-                setIsLoading(false);
-                if (result.success) {
-                    await addAudit(`Eliminación de viaje (desde calendario) para ${selectedTrip.paciente_nombre}`);
-                    setShowModal(false);
-                    window.dispatchEvent(new Event('refreshData'));
-                }
-            };
+const handleDelete = async () => {
+    if (!confirm('¿Eliminar este viaje?')) return;
+    setIsLoading(true);
+    try {
+        const result = await apiCall('eliminarViaje', { id: selectedTrip.id });
+        if (!result.success) throw new Error(result.error);
+        
+        await addAudit(`Eliminación de viaje (desde calendario) para ${selectedTrip.paciente_nombre}`);
+        setShowModal(false);
+        await loadData();
+    } catch (error) {
+        alert('Error: ' + error.message);
+    } finally {
+        setIsLoading(false);
+    }
+};
 
             const startEdit = () => {
                 setForm(selectedTrip);
                 setEditMode(true);
             };
 
-            const saveEdit = async (e) => {
-                e.preventDefault();
-                setIsLoading(true);
-                const payload = { ...form, importe: parseFloat(form.importe) || 0 };
-                const result = await apiCall('editarViaje', payload);
-                setIsLoading(false);
-                if (result.success) {
-                    await addAudit(`Modificación de viaje (desde calendario) para ${form.paciente_nombre}`);
-                    setShowModal(false);
-                    window.dispatchEvent(new Event('refreshData'));
-                } else {
-                    alert('Error: ' + (result.error || 'Desconocido'));
-                }
-            };
+const saveEdit = async (e) => {
+    e.preventDefault();
+    setIsLoading(true);
+    try {
+        const payload = { ...form, importe: parseFloat(form.importe) || 0 };
+        const result = await apiCall('editarViaje', payload);
+        if (!result.success) throw new Error(result.error);
+        
+        await addAudit(`Modificación de viaje (desde calendario) para ${form.paciente_nombre}`);
+        setShowModal(false);
+        await loadData();
+    } catch (error) {
+        alert('Error: ' + error.message);
+    } finally {
+        setIsLoading(false);
+    }
+};
 
             const getStatusColor = (estado) => {
                 switch(estado) {
@@ -1039,7 +1075,7 @@ const TripView = ({ trips, setTrips, patients, addAudit, setIsLoading }) => {
                     <main className="flex-1 ml-64">
                         {view === 'dashboard' && <DashboardView setView={setView} patients={patients} trips={trips} />}
                         {view === 'patients' && <PatientView patients={patients} setPatients={setPatients} addAudit={addAudit} setIsLoading={setIsLoading} />}
-                        {view === 'trips' && <TripView trips={trips} setTrips={setTrips} patients={patients} addAudit={addAudit} setIsLoading={setIsLoading} />}
+                        {view === 'trips' && <TripView trips={trips} setTrips={setTrips} patients={patients} addAudit={addAudit} setIsLoading={setIsLoading} user={user} />}
                         {view === 'calendar' && <CalendarView trips={trips} setTrips={setTrips} patients={patients} addAudit={addAudit} setIsLoading={setIsLoading} />}
                         {view === 'contact' && <ContactView />}
                     </main>
